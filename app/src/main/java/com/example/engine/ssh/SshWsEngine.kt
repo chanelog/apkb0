@@ -1,17 +1,30 @@
 package com.example.engine.ssh
 
+import android.os.Build
 import com.example.domain.model.Profile
 import com.example.domain.model.TunnelProtocol
 import com.example.utils.OGLogger
 import com.jcraft.jsch.ChannelDirectTCPIP
+import com.jcraft.jsch.ChannelExec
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.Session
 import com.jcraft.jsch.SocketFactory
+import com.jcraft.jsch.UserInfo
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.HttpURLConnection
+import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.Proxy
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.URL
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import java.util.Base64
@@ -24,45 +37,47 @@ import javax.net.ssl.X509TrustManager
 
 class SshWsEngine(
     private val profile: Profile,
+    val requestedLocalSocksPort: Int = 10808,
     private val timeoutSeconds: Int = 15,
     private val onTrafficUpdate: (uploadBytes: Long, downloadBytes: Long) -> Unit,
     private val socketProtector: ((Socket) -> Unit)? = null
 ) {
 
     private val isRunning = AtomicBoolean(false)
+    private val hasBannerBeenLogged = AtomicBoolean(false)
     private var jschSession: Session? = null
     private var socksServer: Socks5LocalServer? = null
     private var rawTransportSocket: Socket? = null
+    private var httpPingJob: Job? = null
+    private val scope = CoroutineScope(Dispatchers.IO)
 
     val totalUploaded = AtomicLong(0L)
     val totalDownloaded = AtomicLong(0L)
 
-    var localSocksPort: Int = 10808
+    var localSocksPort: Int = requestedLocalSocksPort
         private set
 
     fun start() {
         if (isRunning.get()) return
         isRunning.set(true)
 
-        OGLogger.i("SshWsEngine", "Starting SSH connection for profile: ${profile.name} (${profile.protocol.displayName})")
+        OGLogger.i(
+            "System",
+            "Running on ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})"
+        )
 
         try {
             val jsch = JSch()
 
             if (profile.sshPrivateKey.isNotBlank()) {
-                OGLogger.i("SshWsEngine", "Configuring SSH private key identity")
+                OGLogger.i("SSH", "Configuring SSH private key identity")
                 jsch.addIdentity("custom_identity", profile.sshPrivateKey.toByteArray(), null, null)
             }
 
             // Create custom socket factory to handle direct TCP, WebSocket handshake, or TLS
             val customSocketFactory = object : SocketFactory {
-                private var connectedSocket: Socket? = null
-
                 override fun createSocket(host: String, port: Int): Socket {
-                    OGLogger.i("SshWsEngine", "Establishing transport socket: protocol=${profile.protocol}")
-                    val sock = establishTransportSocket()
-                    connectedSocket = sock
-                    return sock
+                    return establishTransportSocket()
                 }
 
                 override fun getInputStream(socket: Socket): InputStream {
@@ -87,27 +102,50 @@ class SshWsEngine(
                 session.setPassword(profile.sshPassword)
             }
 
+            // Set UserInfo callback to capture native SSH Server Banner / Message (MOTD)
+            val customUserInfo = object : UserInfo {
+                override fun showMessage(message: String?) {
+                    if (!message.isNullOrBlank()) {
+                        hasBannerBeenLogged.set(true)
+                        OGLogger.i("SSH", "Server Message:\n$message")
+                    }
+                }
+
+                override fun getPassphrase(): String? = null
+                override fun getPassword(): String = profile.sshPassword
+                override fun promptPassword(message: String?): Boolean = true
+                override fun promptPassphrase(message: String?): Boolean = true
+                override fun promptYesNo(message: String?): Boolean = true
+            }
+            session.userInfo = customUserInfo
+
             session.setConfig("StrictHostKeyChecking", "no")
             session.setConfig("PreferredAuthentications", "publickey,keyboard-interactive,password")
             session.timeout = timeoutSeconds * 1000
             session.serverAliveInterval = profile.keepaliveIntervalSeconds.coerceAtLeast(5)
 
-            OGLogger.i("SshWsEngine", "Connecting JSch session to ${profile.sshHost}:${profile.sshPort}...")
             session.connect(timeoutSeconds * 1000)
 
             if (!session.isConnected) {
                 throw IllegalStateException("SSH authentication completed but session is not connected")
             }
 
-            OGLogger.i("SshWsEngine", "SSH session authenticated successfully (Server Version: ${session.serverVersion})")
+            OGLogger.i("SSH", session.serverVersion)
+            OGLogger.i("SSH", "Auth complete")
+            OGLogger.i("SSH", "Connected")
+
+            if (!hasBannerBeenLogged.get()) {
+                fetchServerBanner(session)
+            }
 
             // Start local SOCKS5 proxy server for TUN routing
             startLocalSocksServer(session)
 
-            OGLogger.i("SshWsEngine", "SshWsEngine ready. Local SOCKS5 listening on 127.0.0.1:$localSocksPort")
+            // Start background HTTP ping loop to verify actual internet connectivity
+            startHttpPingLoop()
 
         } catch (e: Exception) {
-            OGLogger.e("SshWsEngine", "SSH engine startup failed: ${e.message}", e)
+            OGLogger.e("SSH", "Connection failed: ${e.message}", e)
             stop()
             throw e
         }
@@ -128,26 +166,27 @@ class SshWsEngine(
             }
         }
 
-        OGLogger.i("SshWsEngine", "Connecting TCP to transport endpoint $targetHost:$targetPort (TLS: ${profile.tlsEnabled})")
+        OGLogger.i("Transport", "Connecting to $targetHost port $targetPort")
 
-        var baseSocket = Socket()
+        val baseSocket = Socket()
         socketProtector?.invoke(baseSocket)
         baseSocket.connect(InetSocketAddress(targetHost, targetPort), timeoutSeconds * 1000)
         baseSocket.tcpNoDelay = true
 
         rawTransportSocket = baseSocket
-
         var transportSocket = baseSocket
+
         if (profile.tlsEnabled) {
+            val sniHost = profile.tlsSni.ifEmpty { targetHost }
+            OGLogger.i("TLS", "Handshaking using $sniHost")
+
             val sslContext = if (profile.allowInsecureCert) {
-                OGLogger.w("SshWsEngine", "SECURITY WARNING: Custom certificate validation disabled for this profile!")
+                OGLogger.w("TLS", "Security Notice: Insecure certificate verification active")
                 createInsecureSslContext()
             } else {
                 SSLContext.getDefault()
             }
 
-            val sniHost = profile.tlsSni.ifEmpty { targetHost }
-            OGLogger.i("SshWsEngine", "Wrapping with TLS socket (SNI: $sniHost)")
             val sslSocket = sslContext.socketFactory.createSocket(
                 baseSocket,
                 sniHost,
@@ -156,6 +195,7 @@ class SshWsEngine(
             ) as SSLSocket
 
             sslSocket.startHandshake()
+            OGLogger.i("TLS", "Handshaked")
             transportSocket = sslSocket
             rawTransportSocket = sslSocket
         }
@@ -190,15 +230,16 @@ class SshWsEngine(
             }
         }
 
-        OGLogger.d("SshWsEngine", "Sending WebSocket/Upgrade Handshake header")
+        val displayPayload = request.replace("\r\n", "[crlf]")
+        OGLogger.i("HTTP", "Sending Payload: $displayPayload")
         out.write(request.toByteArray(Charsets.UTF_8))
         out.flush()
 
         // Read response header until empty line
         val responseHeader = readHttpHeader(inp)
-        OGLogger.i("SshWsEngine", "Received HTTP Handshake Response: ${responseHeader.lines().firstOrNull()}")
-
         val statusLine = responseHeader.lines().firstOrNull() ?: ""
+        OGLogger.i("HTTP", "Response: $statusLine")
+
         if (!statusLine.contains("101") && !statusLine.contains("200")) {
             throw IllegalStateException("WebSocket Upgrade rejected by server: $statusLine")
         }
@@ -230,6 +271,32 @@ class SshWsEngine(
             .replace("[lf]", "\n")
     }
 
+    private fun fetchServerBanner(session: Session) {
+        scope.launch {
+            try {
+                val execChannel = session.openChannel("exec") as? ChannelExec ?: return@launch
+                execChannel.setCommand("cat /etc/issue.net 2>/dev/null || cat /etc/motd 2>/dev/null")
+                val inp = execChannel.inputStream
+                execChannel.connect(3000)
+                val reader = inp.bufferedReader()
+                val bannerBuilder = StringBuilder()
+                var linesCount = 0
+                while (linesCount < 50) {
+                    val currentLine = reader.readLine() ?: break
+                    if (currentLine.isNotBlank()) {
+                        bannerBuilder.appendLine(currentLine)
+                        linesCount++
+                    }
+                }
+                execChannel.disconnect()
+                val banner = bannerBuilder.toString().trim()
+                if (banner.isNotEmpty() && !hasBannerBeenLogged.getAndSet(true)) {
+                    OGLogger.i("SSH", "Server Message:\n$banner")
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
     private fun createInsecureSslContext(): SSLContext {
         val trustAll = arrayOf<TrustManager>(object : X509TrustManager {
             override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
@@ -242,8 +309,11 @@ class SshWsEngine(
     }
 
     private fun startLocalSocksServer(session: Session) {
-        // Find an open port
-        val serverSocket = ServerSocket(0)
+        val serverSocket = try {
+            ServerSocket(requestedLocalSocksPort, 50, InetAddress.getByName("127.0.0.1"))
+        } catch (_: Exception) {
+            ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
+        }
         localSocksPort = serverSocket.localPort
 
         socksServer = Socks5LocalServer(
@@ -259,8 +329,34 @@ class SshWsEngine(
         socksServer?.start()
     }
 
+    private fun startHttpPingLoop() {
+        httpPingJob?.cancel()
+        httpPingJob = scope.launch {
+            delay(1500)
+            while (isActive && isRunning.get()) {
+                try {
+                    val start = System.currentTimeMillis()
+                    val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", localSocksPort))
+                    val url = URL("http://connectivitycheck.gstatic.com/generate_204")
+                    val conn = url.openConnection(proxy) as HttpURLConnection
+                    conn.connectTimeout = 4000
+                    conn.readTimeout = 4000
+                    conn.instanceFollowRedirects = false
+                    val code = conn.responseCode
+                    val latency = System.currentTimeMillis() - start
+                    if (code == 204 || code == 200) {
+                        OGLogger.i("HTTP", "HTTP Ping $code No Content (${latency}ms)")
+                    }
+                } catch (_: Exception) {}
+                delay(5000)
+            }
+        }
+    }
+
     fun stop() {
         isRunning.set(false)
+        httpPingJob?.cancel()
+        httpPingJob = null
         try {
             socksServer?.stop()
         } catch (_: Exception) {}
@@ -270,7 +366,7 @@ class SshWsEngine(
         try {
             rawTransportSocket?.close()
         } catch (_: Exception) {}
-        OGLogger.i("SshWsEngine", "SshWsEngine stopped cleanly")
+        OGLogger.i("SSH", "Disconnected")
     }
 }
 

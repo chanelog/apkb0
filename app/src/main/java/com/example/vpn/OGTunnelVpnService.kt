@@ -167,10 +167,15 @@ class OGTunnelVpnService : VpnService() {
             vpnInterface = pfd
 
             // 3. Start TUN Packet Router
+            val actualSocksPort = if (profile.protocol.isSsh) {
+                sshEngine?.localSocksPort ?: localSocksPort
+            } else {
+                localSocksPort
+            }
             tunRouter = TunPacketRouter(
                 vpnInterface = pfd,
                 vpnService = this,
-                localSocksPort = localSocksPort,
+                localSocksPort = actualSocksPort,
                 primaryDns = settings.primaryDns,
                 onTraffic = { up, down ->
                     VpnController.updateTraffic(up, down)
