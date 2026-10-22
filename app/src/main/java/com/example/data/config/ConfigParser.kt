@@ -1,17 +1,66 @@
 package com.example.data.config
 
-import android.net.Uri
-import android.util.Base64
 import com.example.domain.model.Profile
 import com.example.domain.model.TunnelProtocol
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.URI
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
+import java.util.Base64
 
 sealed class ParseResult {
     data class Success(val profiles: List<Profile>) : ParseResult()
     data class Error(val message: String) : ParseResult()
+}
+
+internal data class SimpleUri(
+    val userInfo: String?,
+    val host: String?,
+    val port: Int,
+    val path: String?,
+    val queryParams: Map<String, String>,
+    val fragment: String?
+) {
+    fun getQuery(key: String): String? = queryParams[key]
+
+    companion object {
+        fun parse(raw: String): SimpleUri {
+            val uri = URI(raw.trim())
+            val params = mutableMapOf<String, String>()
+            val rawQuery = uri.rawQuery
+            if (!rawQuery.isNullOrEmpty()) {
+                rawQuery.split("&").forEach { pair ->
+                    val idx = pair.indexOf('=')
+                    if (idx > 0) {
+                        val k = pair.substring(0, idx)
+                        val v = URLDecoder.decode(pair.substring(idx + 1), "UTF-8")
+                        params[k] = v
+                    } else if (idx == -1 && pair.isNotEmpty()) {
+                        params[pair] = ""
+                    }
+                }
+            }
+            val frag = uri.rawFragment?.let {
+                try { URLDecoder.decode(it, "UTF-8") } catch (_: Exception) { it }
+            }
+            val uInfo = uri.rawUserInfo?.let {
+                try { URLDecoder.decode(it, "UTF-8") } catch (_: Exception) { it }
+            }
+            val pth = uri.rawPath?.let {
+                try { URLDecoder.decode(it, "UTF-8") } catch (_: Exception) { it }
+            }
+
+            return SimpleUri(
+                userInfo = uInfo,
+                host = uri.host,
+                port = uri.port,
+                path = pth,
+                queryParams = params,
+                fragment = frag
+            )
+        }
+    }
 }
 
 object ConfigParser {
@@ -44,7 +93,6 @@ object ConfigParser {
                     parseJsonConfig(trimmed)
                 }
                 else -> {
-                    // Try parsing multiple lines or base64 decoded input
                     parseMultiLineOrBase64(trimmed)
                 }
             }
@@ -54,23 +102,23 @@ object ConfigParser {
     }
 
     private fun parseVless(rawUri: String): Profile {
-        val uri = Uri.parse(rawUri)
+        val uri = SimpleUri.parse(rawUri)
         val userInfo = uri.userInfo ?: throw IllegalArgumentException("Missing UUID in VLESS URI")
         val host = uri.host ?: throw IllegalArgumentException("Missing host in VLESS URI")
         val port = if (uri.port != -1) uri.port else 443
-        val fragment = uri.fragment?.let { URLDecoder.decode(it, StandardCharsets.UTF_8.name()) } ?: "VLESS - $host"
+        val fragment = uri.fragment ?: "VLESS - $host"
 
-        val type = uri.getQueryParameter("type") ?: "tcp"
-        val security = uri.getQueryParameter("security") ?: "none"
-        val path = uri.getQueryParameter("path")?.let { URLDecoder.decode(it, StandardCharsets.UTF_8.name()) } ?: "/"
-        val hostHeader = uri.getQueryParameter("host") ?: ""
-        val sni = uri.getQueryParameter("sni") ?: hostHeader
-        val flow = uri.getQueryParameter("flow") ?: ""
-        val encryption = uri.getQueryParameter("encryption") ?: "none"
-        val serviceName = uri.getQueryParameter("serviceName") ?: ""
-        val pbk = uri.getQueryParameter("pbk") ?: "" // reality public key
-        val sid = uri.getQueryParameter("sid") ?: "" // reality short id
-        val fp = uri.getQueryParameter("fp") ?: "chrome"
+        val type = uri.getQuery("type") ?: "tcp"
+        val security = uri.getQuery("security") ?: "none"
+        val path = uri.getQuery("path") ?: "/"
+        val hostHeader = uri.getQuery("host") ?: ""
+        val sni = uri.getQuery("sni") ?: hostHeader
+        val flow = uri.getQuery("flow") ?: ""
+        val encryption = uri.getQuery("encryption") ?: "none"
+        val serviceName = uri.getQuery("serviceName") ?: ""
+        val pbk = uri.getQuery("pbk") ?: "" // reality public key
+        val sid = uri.getQuery("sid") ?: "" // reality short id
+        val fp = uri.getQuery("fp") ?: "chrome"
 
         return Profile(
             name = fragment,
@@ -94,7 +142,12 @@ object ConfigParser {
 
     private fun parseVmess(rawUri: String): Profile {
         val base64Data = rawUri.substring(8).trim()
-        val decodedJson = String(Base64.decode(base64Data, Base64.DEFAULT or Base64.URL_SAFE), StandardCharsets.UTF_8)
+        val decodedBytes = try {
+            Base64.getUrlDecoder().decode(base64Data)
+        } catch (_: Exception) {
+            Base64.getDecoder().decode(base64Data)
+        }
+        val decodedJson = String(decodedBytes, StandardCharsets.UTF_8)
         val json = JSONObject(decodedJson)
 
         val name = json.optString("ps", "VMess Profile")
@@ -126,17 +179,17 @@ object ConfigParser {
     }
 
     private fun parseTrojan(rawUri: String): Profile {
-        val uri = Uri.parse(rawUri)
+        val uri = SimpleUri.parse(rawUri)
         val password = uri.userInfo ?: throw IllegalArgumentException("Missing password in Trojan URI")
         val host = uri.host ?: throw IllegalArgumentException("Missing host in Trojan URI")
         val port = if (uri.port != -1) uri.port else 443
-        val fragment = uri.fragment?.let { URLDecoder.decode(it, StandardCharsets.UTF_8.name()) } ?: "Trojan - $host"
+        val fragment = uri.fragment ?: "Trojan - $host"
 
-        val type = uri.getQueryParameter("type") ?: "tcp"
-        val security = uri.getQueryParameter("security") ?: "tls"
-        val sni = uri.getQueryParameter("sni") ?: uri.getQueryParameter("peer") ?: host
-        val path = uri.getQueryParameter("path")?.let { URLDecoder.decode(it, StandardCharsets.UTF_8.name()) } ?: "/"
-        val hostHeader = uri.getQueryParameter("host") ?: ""
+        val type = uri.getQuery("type") ?: "tcp"
+        val security = uri.getQuery("security") ?: "tls"
+        val sni = uri.getQuery("sni") ?: uri.getQuery("peer") ?: host
+        val path = uri.getQuery("path") ?: "/"
+        val hostHeader = uri.getQuery("host") ?: ""
 
         return Profile(
             name = fragment,
@@ -153,21 +206,21 @@ object ConfigParser {
     }
 
     private fun parseSshUri(rawUri: String): Profile {
-        val uri = Uri.parse(rawUri)
+        val uri = SimpleUri.parse(rawUri)
         val host = uri.host ?: throw IllegalArgumentException("Missing host in SSH URI")
         val port = if (uri.port != -1) uri.port else 22
         val userInfo = uri.userInfo ?: ""
         val parts = userInfo.split(":")
         val username = parts.getOrNull(0) ?: ""
         val password = parts.getOrNull(1) ?: ""
-        val fragment = uri.fragment?.let { URLDecoder.decode(it, StandardCharsets.UTF_8.name()) } ?: "SSH - $host"
+        val fragment = uri.fragment ?: "SSH - $host"
 
-        val wsHost = uri.getQueryParameter("ws_host") ?: ""
-        val wsPort = uri.getQueryParameter("ws_port")?.toIntOrNull() ?: 80
-        val wsPath = uri.getQueryParameter("ws_path") ?: "/ssh"
-        val tls = uri.getQueryParameter("tls") == "1" || uri.getQueryParameter("tls").equals("true", ignoreCase = true)
-        val sni = uri.getQueryParameter("sni") ?: ""
-        val mode = uri.getQueryParameter("mode") ?: "ws"
+        val wsHost = uri.getQuery("ws_host") ?: ""
+        val wsPort = uri.getQuery("ws_port")?.toIntOrNull() ?: 80
+        val wsPath = uri.getQuery("ws_path") ?: "/ssh"
+        val tls = uri.getQuery("tls") == "1" || uri.getQuery("tls").equals("true", ignoreCase = true)
+        val sni = uri.getQuery("sni") ?: ""
+        val mode = uri.getQuery("mode") ?: "ws"
 
         val protocol = when (mode.lowercase()) {
             "tcp" -> TunnelProtocol.SSH_TCP
@@ -193,7 +246,6 @@ object ConfigParser {
     private fun parseJsonConfig(jsonStr: String): ParseResult {
         return try {
             if (jsonStr.trim().startsWith("[")) {
-                // Array of profiles
                 val jsonArray = JSONArray(jsonStr)
                 val profiles = mutableListOf<Profile>()
                 for (i in 0 until jsonArray.length()) {
@@ -204,7 +256,6 @@ object ConfigParser {
             } else {
                 val jsonObject = JSONObject(jsonStr)
                 if (jsonObject.has("profiles")) {
-                    // Backup export wrapper
                     val arr = jsonObject.getJSONArray("profiles")
                     val profiles = mutableListOf<Profile>()
                     for (i in 0 until arr.length()) {
@@ -212,7 +263,6 @@ object ConfigParser {
                     }
                     ParseResult.Success(profiles)
                 } else if (jsonObject.has("outbounds")) {
-                    // Raw Xray config file
                     val profile = parseXrayJsonConfig(jsonObject)
                     ParseResult.Success(listOf(profile))
                 } else {

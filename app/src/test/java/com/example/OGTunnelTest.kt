@@ -3,7 +3,6 @@ package com.example
 import com.example.data.config.ConfigExporter
 import com.example.data.config.ConfigParser
 import com.example.data.config.ParseResult
-import com.example.domain.model.ConnectionState
 import com.example.domain.model.ConnectionStats
 import com.example.domain.model.Profile
 import com.example.domain.model.ProfileValidationResult
@@ -15,12 +14,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34])
 class OGTunnelTest {
 
     @Test
@@ -68,7 +62,7 @@ class OGTunnelTest {
             protocol = TunnelProtocol.VLESS,
             serverAddress = "example.com",
             serverPort = 443,
-            uuid = "", // missing UUID
+            uuid = "",
             security = "none"
         )
         assertTrue(invalidXray.validate() is ProfileValidationResult.Invalid)
