@@ -49,13 +49,13 @@ jobs:
           STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          # 1. Ensure debug.keystore exists for debugConfig in app/build.gradle.kts
+          # 1. Ensure debug.keystore exists with alias 'androiddebugkey'
           if [ ! -f debug.keystore ]; then
             if [ -f debug.keystore.base64 ]; then
               echo "Restoring debug.keystore from debug.keystore.base64..."
               base64 -d debug.keystore.base64 > debug.keystore
             else
-              echo "Generating new debug.keystore using keytool..."
+              echo "Generating debug.keystore with alias 'androiddebugkey'..."
               keytool -genkeypair -v \
                 -keystore debug.keystore \
                 -alias androiddebugkey \
@@ -69,16 +69,35 @@ jobs:
           fi
           ls -lh debug.keystore
 
-          # 2. Setup release keystore for release build
+          # 2. Ensure my-upload-key.jks exists with alias 'upload'
           if [ -n "$KEYSTORE_BASE64" ]; then
             echo "Decoding release keystore from GitHub Secrets..."
             echo "$KEYSTORE_BASE64" | base64 -d > my-upload-key.jks
             echo "KEYSTORE_PATH=$(pwd)/my-upload-key.jks" >> $GITHUB_ENV
             echo "STORE_PASSWORD=$STORE_PASSWORD" >> $GITHUB_ENV
             echo "KEY_PASSWORD=$KEY_PASSWORD" >> $GITHUB_ENV
+          elif [ -f my-upload-key.jks ]; then
+            echo "Using existing my-upload-key.jks in repository..."
+            echo "KEYSTORE_PATH=$(pwd)/my-upload-key.jks" >> $GITHUB_ENV
+            echo "STORE_PASSWORD=android" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=android" >> $GITHUB_ENV
+          elif [ -f my-upload-key.jks.base64 ]; then
+            echo "Restoring my-upload-key.jks from base64..."
+            base64 -d my-upload-key.jks.base64 > my-upload-key.jks
+            echo "KEYSTORE_PATH=$(pwd)/my-upload-key.jks" >> $GITHUB_ENV
+            echo "STORE_PASSWORD=android" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=android" >> $GITHUB_ENV
           else
-            echo "No custom release keystore provided. Using debug.keystore fallback for release..."
-            cp debug.keystore my-upload-key.jks
+            echo "Generating release keystore with alias 'upload'..."
+            keytool -genkeypair -v \
+              -keystore my-upload-key.jks \
+              -alias upload \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -keypass android \
+              -storepass android \
+              -dname "CN=OGTunnel,O=OGTunnel,C=US"
             echo "KEYSTORE_PATH=$(pwd)/my-upload-key.jks" >> $GITHUB_ENV
             echo "STORE_PASSWORD=android" >> $GITHUB_ENV
             echo "KEY_PASSWORD=android" >> $GITHUB_ENV
