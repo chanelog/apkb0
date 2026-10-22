@@ -55,6 +55,7 @@ class XrayCoreManager(
             OGLogger.e("XrayCoreManager", "Validation failed: $msg")
             throw IllegalArgumentException(msg)
         }
+        OGLogger.success("XrayCoreManager", "Configuration validated for ${profile.protocol.displayName} (SOCKS port $localSocksPort)")
 
         OGLogger.i("XrayCoreManager", "Validating Xray Core binary on ABI: $supportedArch")
 
@@ -89,6 +90,7 @@ class XrayCoreManager(
             val proc = pb.start()
             process = proc
             isRunning.set(true)
+            OGLogger.success("XrayCoreManager", "Xray core process started successfully")
 
             // Monitor output & crash
             logJob = scope.launch {

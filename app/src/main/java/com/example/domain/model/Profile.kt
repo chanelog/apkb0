@@ -10,7 +10,7 @@ sealed class ProfileValidationResult {
 data class Profile(
     val id: String = UUID.randomUUID().toString(),
     val name: String = "",
-    val protocol: TunnelProtocol = TunnelProtocol.SSH_WS,
+    val protocol: TunnelProtocol = TunnelProtocol.SSH_WS_TLS,
     val isFavorite: Boolean = false,
     val lastUsedTimestamp: Long = 0L,
     val createdAt: Long = System.currentTimeMillis(),
@@ -50,9 +50,22 @@ data class Profile(
     val realityShortId: String = "",
     val fingerprint: String = "chrome"
 ) {
+    val effectiveTls: Boolean
+        get() = when (protocol) {
+            TunnelProtocol.SSH_WS_TLS, TunnelProtocol.SSH_OVER_TLS -> true
+            TunnelProtocol.SSH_WS_NTLS, TunnelProtocol.SSH_TCP -> false
+            TunnelProtocol.SSH_WS, TunnelProtocol.SSH_HTTP_UPGRADE -> tlsEnabled
+            else -> security.equals("tls", ignoreCase = true) || security.equals("reality", ignoreCase = true)
+        }
+
     val displayEndpoint: String
         get() = if (protocol.isSsh) {
-            if (wsHost.isNotBlank()) "$wsHost:$wsPort" else "$sshHost:$sshPort"
+            if (wsHost.isNotBlank()) {
+                val port = if (wsPort > 0) wsPort else if (effectiveTls) 443 else 80
+                "$wsHost:$port"
+            } else {
+                "$sshHost:$sshPort"
+            }
         } else {
             "$serverAddress:$serverPort"
         }
@@ -75,13 +88,9 @@ data class Profile(
             if (sshPassword.isBlank() && sshPrivateKey.isBlank()) {
                 return ProfileValidationResult.Invalid("SSH Password or Private Key is required")
             }
-            if (protocol == TunnelProtocol.SSH_WS) {
-                if (wsHost.isBlank()) {
-                    return ProfileValidationResult.Invalid("WebSocket Host / CDN domain is required")
-                }
-                if (wsPort !in 1..65535) {
-                    return ProfileValidationResult.Invalid("WebSocket Port must be between 1 and 65535")
-                }
+            // Optional fields (wsHost, wsPort, wsPath, customPayload, tlsSni) must NOT cause validation to fail when empty
+            if (wsPort != 0 && wsPort !in 1..65535) {
+                return ProfileValidationResult.Invalid("WebSocket Port must be between 1 and 65535")
             }
         } else if (protocol.isXray) {
             if (serverAddress.isBlank()) {

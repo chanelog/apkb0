@@ -19,6 +19,7 @@ import com.example.R
 import com.example.data.preferences.SplitTunnelMode
 import com.example.domain.model.ConnectionState
 import com.example.domain.model.Profile
+import com.example.domain.model.ProfileValidationResult
 import com.example.engine.ssh.SshWsEngine
 import com.example.engine.xray.XrayCoreManager
 import com.example.utils.OGLogger
@@ -28,6 +29,14 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.net.HttpURLConnection
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Proxy
+import java.net.Socket
+import java.net.URL
+import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicInteger
 
 class OGTunnelVpnService : VpnService() {
@@ -78,33 +87,55 @@ class OGTunnelVpnService : VpnService() {
         val profile = app.database.profileDao().getProfileById(profileId)?.toDomain()
         if (profile == null) {
             OGLogger.e("VpnService", "Profile not found for ID: $profileId")
-            VpnController.updateState(ConnectionState.ERROR, error = "Profile not found")
+            VpnController.updateState(ConnectionState.FAILED, error = "Profile not found")
             stopSelf()
             return
         }
 
         activeProfile = profile
-        VpnController.updateState(ConnectionState.CONNECTING, profile)
 
-        // Start Foreground Service
-        startForegroundNotification("Connecting to ${profile.name}...")
+        // 1. Validating Profile
+        VpnController.updateState(ConnectionState.VALIDATING, profile)
+        val validationResult = profile.validate()
+        if (validationResult is ProfileValidationResult.Invalid) {
+            OGLogger.e("VpnService", "Profile validation error: ${validationResult.message}")
+            VpnController.updateState(ConnectionState.FAILED, profile, error = validationResult.message)
+            stopSelf()
+            return
+        }
+
+        startForegroundNotification("Initializing ${profile.name}...")
 
         try {
             val settings = app.settingsManager.settingsFlow.first()
 
-            // 1. Start Engine (SSHWS or Xray)
+            // 2. Start Engine (SSHWS or Xray)
             val localSocksPort = 10808
+            val actualSocksPort: Int
+
             if (profile.protocol.isSsh) {
+                VpnController.updateState(ConnectionState.CONNECTING_TRANSPORT, profile)
                 sshEngine = SshWsEngine(
                     profile = profile,
                     timeoutSeconds = settings.connectionTimeoutSeconds,
                     onTrafficUpdate = { up, down ->
                         VpnController.updateTraffic(up, down)
                     },
-                    socketProtector = { socket -> protect(socket) }
+                    onStateUpdate = { state, msg ->
+                        VpnController.updateState(state, profile)
+                        if (msg != null) startForegroundNotification(msg)
+                    },
+                    socketProtector = { socket ->
+                        val ok = protect(socket)
+                        if (!ok) {
+                            OGLogger.w("VpnService", "Socket protection warning: protect() returned false for $socket")
+                        }
+                    }
                 )
                 sshEngine?.start()
+                actualSocksPort = sshEngine?.localSocksPort ?: localSocksPort
             } else {
+                VpnController.updateState(ConnectionState.STARTING_ENGINE, profile)
                 xrayManager = XrayCoreManager(
                     context = this,
                     profile = profile,
@@ -114,10 +145,17 @@ class OGTunnelVpnService : VpnService() {
                         handleEngineCrash(code, msg)
                     }
                 )
-                xrayManager?.start()
+                val started = xrayManager?.start() == true
+                if (!started) {
+                    throw IllegalStateException("Xray core engine failed to start")
+                }
+                actualSocksPort = localSocksPort
             }
 
-            // 2. Establish TUN Interface
+            // 3. Establish TUN Interface
+            VpnController.updateState(ConnectionState.ESTABLISHING_VPN, profile)
+            startForegroundNotification("Configuring TUN interface...")
+
             val builder = Builder()
                 .setSession("OGTunnel - ${profile.name}")
                 .setMtu(settings.mtu)
@@ -155,23 +193,14 @@ class OGTunnelVpnService : VpnService() {
                         }
                     }
                 }
-                SplitTunnelMode.ALL_APPS -> {
-                    // All apps routed through VPN
-                }
+                SplitTunnelMode.ALL_APPS -> {}
             }
 
             val pfd = builder.establish()
-            if (pfd == null) {
-                throw IllegalStateException("Failed to establish TUN interface. Permission might be revoked.")
-            }
+                ?: throw IllegalStateException("Failed to establish TUN interface. Permission might be revoked.")
             vpnInterface = pfd
 
-            // 3. Start TUN Packet Router
-            val actualSocksPort = if (profile.protocol.isSsh) {
-                sshEngine?.localSocksPort ?: localSocksPort
-            } else {
-                localSocksPort
-            }
+            // 4. Start TUN Packet Router
             tunRouter = TunPacketRouter(
                 vpnInterface = pfd,
                 vpnService = this,
@@ -183,7 +212,21 @@ class OGTunnelVpnService : VpnService() {
             )
             tunRouter?.start()
 
-            // Update state & save last used
+            // 5. PRIORITY 2: VERIFY REAL CONNECTIVITY THROUGH TUNNEL BEFORE DECLARING CONNECTED
+            VpnController.updateState(ConnectionState.TESTING_CONNECTIVITY, profile)
+            startForegroundNotification("Verifying internet access through tunnel...")
+            OGLogger.i("Diagnostics", "Performing bounded end-to-end connectivity test through tunnel (SOCKS: $actualSocksPort)...")
+
+            val (verified, diagDetails) = verifyTunnelConnectivity(actualSocksPort, settings.primaryDns)
+            if (!verified) {
+                val errorMsg = "Internet verification failed through tunnel: $diagDetails"
+                OGLogger.e("Diagnostics", errorMsg)
+                VpnController.updateState(ConnectionState.FAILED, profile, error = errorMsg)
+                stopTunnel("Connectivity test failed")
+                return
+            }
+
+            OGLogger.success("Diagnostics", "Internet verified through tunnel ($diagDetails)")
             VpnController.updateState(ConnectionState.CONNECTED, profile)
             app.database.profileDao().updateLastUsed(profile.id, System.currentTimeMillis())
             retryCount.set(0)
@@ -191,13 +234,82 @@ class OGTunnelVpnService : VpnService() {
             startForegroundNotification("Connected: ${profile.name} (${profile.protocol.displayName})")
             registerNetworkMonitor()
 
-            OGLogger.i("VpnService", "VPN established successfully. Routing device traffic through OGTunnel.")
+            OGLogger.success("VpnService", "VPN established and verified successfully. Routing device traffic through OGTunnel.")
 
         } catch (e: Exception) {
             OGLogger.e("VpnService", "VPN startup error: ${e.message}", e)
-            VpnController.updateState(ConnectionState.ERROR, profile, error = e.message ?: "Startup failed")
+            VpnController.updateState(ConnectionState.FAILED, profile, error = e.message ?: "Startup failed")
             stopTunnel("Startup failed")
         }
+    }
+
+    private suspend fun verifyTunnelConnectivity(socksPort: Int, dnsServer: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        val start = System.currentTimeMillis()
+        var success = false
+        var diagMsg = ""
+
+        // Test HTTP/204 through SOCKS5 proxy
+        val testUrls = listOf(
+            "http://connectivitycheck.gstatic.com/generate_204",
+            "http://cp.cloudflare.com/generate_204"
+        )
+
+        for (testUrl in testUrls) {
+            try {
+                val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", socksPort))
+                val conn = URL(testUrl).openConnection(proxy) as HttpURLConnection
+                conn.connectTimeout = 4000
+                conn.readTimeout = 4000
+                conn.instanceFollowRedirects = false
+                val code = conn.responseCode
+                val latency = System.currentTimeMillis() - start
+                if (code in 200..299) {
+                    success = true
+                    diagMsg = "HTTP $code from $testUrl (${latency}ms)"
+                    break
+                }
+            } catch (e: Exception) {
+                diagMsg = "HTTP probe ($testUrl): ${e.message}"
+            }
+        }
+
+        if (!success) {
+            // Fallback: Test SOCKS5 TCP connect to DNS Server port 53
+            try {
+                val sock = Socket()
+                sock.connect(InetSocketAddress("127.0.0.1", socksPort), 3000)
+                val out = sock.getOutputStream()
+                val inp = sock.getInputStream()
+                out.write(byteArrayOf(0x05, 0x01, 0x00))
+                out.flush()
+                val resp = ByteArray(2)
+                inp.read(resp)
+
+                val dnsIpBytes = InetAddress.getByName(dnsServer.ifEmpty { "1.1.1.1" }).address
+                val req = ByteBuffer.allocate(10)
+                req.put(0x05.toByte())
+                req.put(0x01.toByte()) // CONNECT
+                req.put(0x00.toByte())
+                req.put(0x01.toByte()) // IPv4
+                req.put(dnsIpBytes)
+                req.putShort(53.toShort())
+                out.write(req.array())
+                out.flush()
+
+                val connectResp = ByteArray(10)
+                val n = inp.read(connectResp)
+                sock.close()
+                if (n >= 4 && connectResp[1] == 0x00.toByte()) {
+                    val latency = System.currentTimeMillis() - start
+                    success = true
+                    diagMsg = "SOCKS5 DNS endpoint $dnsServer:53 reachable (${latency}ms)"
+                }
+            } catch (e: Exception) {
+                diagMsg = "SOCKS5 probe failed: ${e.message}"
+            }
+        }
+
+        Pair(success, diagMsg)
     }
 
     private fun handleEngineCrash(code: Int, msg: String) {
@@ -214,7 +326,7 @@ class OGTunnelVpnService : VpnService() {
                 delay(backoffMs)
                 activeProfile?.let { startTunnel(it.id) }
             } else {
-                VpnController.updateState(ConnectionState.ERROR, activeProfile, error = "Engine crashed: $msg")
+                VpnController.updateState(ConnectionState.FAILED, activeProfile, error = "Engine crashed: $msg")
                 stopTunnel("Engine crashed")
             }
         }
@@ -316,7 +428,7 @@ class OGTunnelVpnService : VpnService() {
         } catch (_: Exception) {}
         vpnInterface = null
 
-        VpnController.updateState(ConnectionState.DISCONNECTED)
+        VpnController.updateState(ConnectionState.IDLE)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }

@@ -1,6 +1,7 @@
 package com.example.ui.dialogs
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,6 +16,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -55,12 +57,19 @@ import com.example.ui.theme.ElectricTeal
 @Composable
 fun ProfileEditorDialog(
     initialProfile: Profile?,
-    initialProtocol: TunnelProtocol = TunnelProtocol.SSH_WS,
+    initialProtocol: TunnelProtocol = TunnelProtocol.SSH_WS_TLS,
     onDismiss: () -> Unit,
     onSave: (Profile) -> Unit
 ) {
     val isEdit = initialProfile != null
-    var selectedProtocol by remember { mutableStateOf(initialProfile?.protocol ?: initialProtocol) }
+    var selectedProtocol by remember {
+        mutableStateOf(
+            initialProfile?.protocol ?: when (initialProtocol) {
+                TunnelProtocol.SSH_WS -> if (initialProfile?.tlsEnabled == true) TunnelProtocol.SSH_WS_TLS else TunnelProtocol.SSH_WS_NTLS
+                else -> initialProtocol
+            }
+        )
+    }
     var name by remember { mutableStateOf(initialProfile?.name ?: "") }
 
     // SSHWS fields
@@ -68,11 +77,16 @@ fun ProfileEditorDialog(
     var sshPort by remember { mutableStateOf((initialProfile?.sshPort ?: 22).toString()) }
     var sshUser by remember { mutableStateOf(initialProfile?.sshUsername ?: "") }
     var sshPass by remember { mutableStateOf(initialProfile?.sshPassword ?: "") }
+    var sshPrivateKey by remember { mutableStateOf(initialProfile?.sshPrivateKey ?: "") }
     var wsHost by remember { mutableStateOf(initialProfile?.wsHost ?: "") }
-    var wsPort by remember { mutableStateOf((initialProfile?.wsPort ?: 80).toString()) }
+    var wsPort by remember {
+        mutableStateOf(
+            if (initialProfile != null && initialProfile.wsPort > 0) initialProfile.wsPort.toString()
+            else if (selectedProtocol == TunnelProtocol.SSH_WS_TLS) "443" else "80"
+        )
+    }
     var wsPath by remember { mutableStateOf(initialProfile?.wsPath ?: "/ssh") }
     var customPayload by remember { mutableStateOf(initialProfile?.customPayload ?: "") }
-    var tlsEnabled by remember { mutableStateOf(initialProfile?.tlsEnabled ?: false) }
     var tlsSni by remember { mutableStateOf(initialProfile?.tlsSni ?: "") }
     var allowInsecureCert by remember { mutableStateOf(initialProfile?.allowInsecureCert ?: false) }
 
@@ -126,44 +140,53 @@ fun ProfileEditorDialog(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
                 // Profile Name
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
                     label = { Text("Profile Name") },
-                    placeholder = { Text("e.g. My Fast SSH Server") },
+                    placeholder = { Text("e.g. My Fast Tunnel") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true
                 )
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                // Protocol selector chips
-                Text("Protocol", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                // Explicit Connection Mode Selector
+                Text("Connection Mode", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
                 ) {
                     listOf(
-                        TunnelProtocol.SSH_WS,
+                        TunnelProtocol.SSH_WS_TLS,
+                        TunnelProtocol.SSH_WS_NTLS,
                         TunnelProtocol.SSH_TCP,
+                        TunnelProtocol.SSH_HTTP_UPGRADE,
+                        TunnelProtocol.SSH_OVER_TLS,
                         TunnelProtocol.VLESS,
                         TunnelProtocol.VMESS,
                         TunnelProtocol.TROJAN
                     ).forEach { proto ->
                         FilterChip(
                             selected = selectedProtocol == proto,
-                            onClick = { selectedProtocol = proto },
+                            onClick = {
+                                selectedProtocol = proto
+                                if (proto == TunnelProtocol.SSH_WS_TLS && wsPort == "80") wsPort = "443"
+                                if (proto == TunnelProtocol.SSH_WS_NTLS && wsPort == "443") wsPort = "80"
+                            },
                             label = { Text(proto.displayName, fontSize = 11.sp) }
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
-                // Tab navigation for complex configurations
+                // Tab navigation for configurations
                 TabRow(
                     selectedTabIndex = activeTab,
                     containerColor = MaterialTheme.colorScheme.surfaceVariant
@@ -185,7 +208,7 @@ fun ProfileEditorDialog(
                     )
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
                 if (selectedProtocol.isSsh) {
                     // --- SSH CONFIGURATION TABS ---
@@ -194,7 +217,8 @@ fun ProfileEditorDialog(
                             OutlinedTextField(
                                 value = sshHost,
                                 onValueChange = { sshHost = it },
-                                label = { Text("SSH Host / IP") },
+                                label = { Text("SSH Host / Server IP (Required)") },
+                                placeholder = { Text("e.g. 104.21.5.12 or myhost.com") },
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true
                             )
@@ -211,7 +235,7 @@ fun ProfileEditorDialog(
                             OutlinedTextField(
                                 value = sshUser,
                                 onValueChange = { sshUser = it },
-                                label = { Text("Username") },
+                                label = { Text("SSH Username (Required)") },
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true
                             )
@@ -219,63 +243,103 @@ fun ProfileEditorDialog(
                             OutlinedTextField(
                                 value = sshPass,
                                 onValueChange = { sshPass = it },
-                                label = { Text("Password") },
+                                label = { Text("SSH Password") },
                                 visualTransformation = PasswordVisualTransformation(),
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true
                             )
-                        }
-                        1 -> {
-                            OutlinedTextField(
-                                value = wsHost,
-                                onValueChange = { wsHost = it },
-                                label = { Text("WebSocket Host / CDN Domain") },
-                                placeholder = { Text("e.g. cdn.cloudflare.com") },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true
-                            )
                             Spacer(modifier = Modifier.height(8.dp))
                             OutlinedTextField(
-                                value = wsPort,
-                                onValueChange = { wsPort = it },
-                                label = { Text("WebSocket Port (80 or 443)") },
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            OutlinedTextField(
-                                value = wsPath,
-                                onValueChange = { wsPath = it },
-                                label = { Text("WebSocket Path") },
-                                placeholder = { Text("/ssh") },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            OutlinedTextField(
-                                value = customPayload,
-                                onValueChange = { customPayload = it },
-                                label = { Text("Custom HTTP Payload (Optional)") },
-                                placeholder = { Text("GET / HTTP/1.1[crlf]Host: [host][crlf]...") },
+                                value = sshPrivateKey,
+                                onValueChange = { sshPrivateKey = it },
+                                label = { Text("Private Key (Optional alternative to password)") },
+                                placeholder = { Text("-----BEGIN OPENSSH PRIVATE KEY-----...") },
                                 modifier = Modifier.fillMaxWidth(),
                                 minLines = 2
                             )
                         }
-                        2 -> {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text("Enable TLS / SSL (WSS)", modifier = Modifier.weight(1f))
-                                Switch(checked = tlsEnabled, onCheckedChange = { tlsEnabled = it })
-                            }
-                            if (tlsEnabled) {
+                        1 -> {
+                            if (selectedProtocol == TunnelProtocol.SSH_TCP || selectedProtocol == TunnelProtocol.SSH_OVER_TLS) {
+                                Card(
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(Icons.Default.Info, contentDescription = null, tint = CyanGlow)
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = "Direct SSH mode connects straight to SSH port without WebSocket CDN encapsulation.",
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            } else {
+                                OutlinedTextField(
+                                    value = wsHost,
+                                    onValueChange = { wsHost = it },
+                                    label = { Text("WebSocket Host / Bug SNI (Optional)") },
+                                    placeholder = { Text("Defaults to SSH host if empty (e.g. listen.noice.id)") },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true
+                                )
                                 Spacer(modifier = Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = wsPort,
+                                    onValueChange = { wsPort = it },
+                                    label = { Text("WebSocket Port (Optional, e.g. 80 or 443)") },
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = wsPath,
+                                    onValueChange = { wsPath = it },
+                                    label = { Text("WebSocket Path (Optional, defaults to /ssh)") },
+                                    placeholder = { Text("/ssh") },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = customPayload,
+                                    onValueChange = { customPayload = it },
+                                    label = { Text("Custom HTTP Payload (Optional)") },
+                                    placeholder = { Text("GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf][crlf]") },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    minLines = 2
+                                )
+                            }
+                        }
+                        2 -> {
+                            if (selectedProtocol == TunnelProtocol.SSH_WS_NTLS || selectedProtocol == TunnelProtocol.SSH_TCP) {
+                                Card(
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(Icons.Default.Info, contentDescription = null, tint = CyanGlow)
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = "TLS is disabled for this profile (${selectedProtocol.displayName}). Handshake runs in plain text / NTLS mode.",
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            } else {
                                 OutlinedTextField(
                                     value = tlsSni,
                                     onValueChange = { tlsSni = it },
-                                    label = { Text("TLS SNI / Server Name") },
+                                    label = { Text("TLS SNI / Server Name (Optional)") },
+                                    placeholder = { Text("Defaults to target host if empty") },
                                     modifier = Modifier.fillMaxWidth(),
                                     singleLine = true
                                 )
@@ -285,8 +349,12 @@ fun ProfileEditorDialog(
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Column(modifier = Modifier.weight(1f)) {
-                                        Text("Allow Insecure Certificates", color = Color(0xFFFF5252))
-                                        Text("Security Warning: Disables certificate validation", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text("Allow Insecure Certificates", fontSize = 13.sp, color = Color(0xFFFF5252))
+                                        Text(
+                                            "Disable certificate verification (for self-signed servers)",
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
                                     }
                                     Switch(checked = allowInsecureCert, onCheckedChange = { allowInsecureCert = it })
                                 }
@@ -300,7 +368,7 @@ fun ProfileEditorDialog(
                             OutlinedTextField(
                                 value = serverAddress,
                                 onValueChange = { serverAddress = it },
-                                label = { Text("Server Host or IP") },
+                                label = { Text("Server Host or IP (Required)") },
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true
                             )
@@ -318,7 +386,7 @@ fun ProfileEditorDialog(
                                 OutlinedTextField(
                                     value = password,
                                     onValueChange = { password = it },
-                                    label = { Text("Trojan Password") },
+                                    label = { Text("Trojan Password (Required)") },
                                     visualTransformation = PasswordVisualTransformation(),
                                     modifier = Modifier.fillMaxWidth(),
                                     singleLine = true
@@ -327,7 +395,7 @@ fun ProfileEditorDialog(
                                 OutlinedTextField(
                                     value = uuid,
                                     onValueChange = { uuid = it },
-                                    label = { Text("User UUID") },
+                                    label = { Text("User UUID (Required)") },
                                     placeholder = { Text("xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx") },
                                     modifier = Modifier.fillMaxWidth(),
                                     singleLine = true
@@ -350,7 +418,7 @@ fun ProfileEditorDialog(
                                 OutlinedTextField(
                                     value = wsPathXray,
                                     onValueChange = { wsPathXray = it },
-                                    label = { Text("WebSocket Path") },
+                                    label = { Text("WebSocket Path (Optional, defaults to /)") },
                                     modifier = Modifier.fillMaxWidth(),
                                     singleLine = true
                                 )
@@ -358,7 +426,7 @@ fun ProfileEditorDialog(
                                 OutlinedTextField(
                                     value = wsHostHeader,
                                     onValueChange = { wsHostHeader = it },
-                                    label = { Text("WebSocket Host Header") },
+                                    label = { Text("WebSocket Host Header (Optional)") },
                                     modifier = Modifier.fillMaxWidth(),
                                     singleLine = true
                                 )
@@ -366,7 +434,7 @@ fun ProfileEditorDialog(
                                 OutlinedTextField(
                                     value = grpcService,
                                     onValueChange = { grpcService = it },
-                                    label = { Text("gRPC Service Name") },
+                                    label = { Text("gRPC Service Name (Optional)") },
                                     modifier = Modifier.fillMaxWidth(),
                                     singleLine = true
                                 )
@@ -387,7 +455,8 @@ fun ProfileEditorDialog(
                             OutlinedTextField(
                                 value = sni,
                                 onValueChange = { sni = it },
-                                label = { Text("SNI (Server Name Indication)") },
+                                label = { Text("SNI / Server Name (Optional)") },
+                                placeholder = { Text("Defaults to server address if empty") },
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true
                             )
@@ -396,7 +465,7 @@ fun ProfileEditorDialog(
                                 OutlinedTextField(
                                     value = realityPublicKey,
                                     onValueChange = { realityPublicKey = it },
-                                    label = { Text("REALITY Public Key") },
+                                    label = { Text("REALITY Public Key (Required for REALITY)") },
                                     modifier = Modifier.fillMaxWidth(),
                                     singleLine = true
                                 )
@@ -404,7 +473,7 @@ fun ProfileEditorDialog(
                                 OutlinedTextField(
                                     value = realityShortId,
                                     onValueChange = { realityShortId = it },
-                                    label = { Text("REALITY Short ID") },
+                                    label = { Text("REALITY Short ID (Optional)") },
                                     modifier = Modifier.fillMaxWidth(),
                                     singleLine = true
                                 )
@@ -449,11 +518,12 @@ fun ProfileEditorDialog(
                                 sshPort = sshPort.toIntOrNull() ?: 22,
                                 sshUsername = sshUser.trim(),
                                 sshPassword = sshPass,
+                                sshPrivateKey = sshPrivateKey.trim(),
                                 wsHost = wsHost.trim(),
-                                wsPort = wsPort.toIntOrNull() ?: 80,
-                                wsPath = wsPath.trim(),
+                                wsPort = wsPort.toIntOrNull() ?: if (selectedProtocol == TunnelProtocol.SSH_WS_TLS) 443 else 80,
+                                wsPath = wsPath.trim().ifEmpty { "/ssh" },
                                 customPayload = customPayload.trim(),
-                                tlsEnabled = tlsEnabled,
+                                tlsEnabled = selectedProtocol == TunnelProtocol.SSH_WS_TLS || selectedProtocol == TunnelProtocol.SSH_OVER_TLS,
                                 tlsSni = tlsSni.trim(),
                                 allowInsecureCert = allowInsecureCert,
                                 serverAddress = serverAddress.trim(),
@@ -462,7 +532,7 @@ fun ProfileEditorDialog(
                                 password = password.trim(),
                                 security = security,
                                 transport = transport,
-                                wsPathXray = wsPathXray.trim(),
+                                wsPathXray = wsPathXray.trim().ifEmpty { "/" },
                                 wsHostHeader = wsHostHeader.trim(),
                                 grpcServiceName = grpcService.trim(),
                                 sni = sni.trim(),

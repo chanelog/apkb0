@@ -1,18 +1,40 @@
 package com.example.domain.model
 
 enum class ConnectionState(val label: String) {
-    DISCONNECTED("Disconnected"),
-    CONNECTING("Connecting"),
+    IDLE("Disconnected"),
+    VALIDATING("Validating Profile"),
+    CONNECTING_TRANSPORT("Connecting Transport"),
+    AUTHENTICATING("Authenticating"),
+    STARTING_ENGINE("Starting Engine"),
+    ESTABLISHING_VPN("Establishing VPN"),
+    TESTING_CONNECTIVITY("Testing Connectivity"),
     CONNECTED("Connected"),
     RECONNECTING("Reconnecting"),
     DISCONNECTING("Disconnecting"),
-    ERROR("Error");
+    FAILED("Error");
 
     val isTerminal: Boolean
-        get() = this == DISCONNECTED || this == ERROR
+        get() = this == IDLE || this == FAILED
 
     val isActiveOrPending: Boolean
-        get() = this == CONNECTED || this == CONNECTING || this == RECONNECTING
+        get() = this != IDLE && this != FAILED && this != DISCONNECTING
+
+    val isConnectingStage: Boolean
+        get() = this in listOf(
+            VALIDATING,
+            CONNECTING_TRANSPORT,
+            AUTHENTICATING,
+            STARTING_ENGINE,
+            ESTABLISHING_VPN,
+            TESTING_CONNECTIVITY
+        )
+
+    companion object {
+        // Compatibility aliases for existing references
+        val DISCONNECTED = IDLE
+        val CONNECTING = CONNECTING_TRANSPORT
+        val ERROR = FAILED
+    }
 }
 
 data class ConnectionStats(

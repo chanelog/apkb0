@@ -148,9 +148,8 @@ fun HomeScreen(
                     .background(
                         color = when (connectionState) {
                             ConnectionState.CONNECTED -> ElectricTeal.copy(alpha = 0.2f)
-                            ConnectionState.CONNECTING, ConnectionState.RECONNECTING -> Color(0x33FFB300)
-                            ConnectionState.ERROR -> Color(0x33FF5252)
-                            else -> MaterialTheme.colorScheme.surfaceVariant
+                            ConnectionState.FAILED -> Color(0x33FF5252)
+                            else -> if (connectionState.isConnectingStage || connectionState == ConnectionState.RECONNECTING) Color(0x33FFB300) else MaterialTheme.colorScheme.surfaceVariant
                         },
                         shape = RoundedCornerShape(20.dp)
                     )
@@ -158,9 +157,8 @@ fun HomeScreen(
                         width = 1.dp,
                         color = when (connectionState) {
                             ConnectionState.CONNECTED -> ElectricTeal
-                            ConnectionState.CONNECTING, ConnectionState.RECONNECTING -> Color(0xFFFFB300)
-                            ConnectionState.ERROR -> Color(0xFFFF5252)
-                            else -> MaterialTheme.colorScheme.outline
+                            ConnectionState.FAILED -> Color(0xFFFF5252)
+                            else -> if (connectionState.isConnectingStage || connectionState == ConnectionState.RECONNECTING) Color(0xFFFFB300) else MaterialTheme.colorScheme.outline
                         },
                         shape = RoundedCornerShape(20.dp)
                     )
@@ -172,9 +170,8 @@ fun HomeScreen(
                     fontWeight = FontWeight.Bold,
                     color = when (connectionState) {
                         ConnectionState.CONNECTED -> ElectricTeal
-                        ConnectionState.CONNECTING, ConnectionState.RECONNECTING -> Color(0xFFFFB300)
-                        ConnectionState.ERROR -> Color(0xFFFF5252)
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        ConnectionState.FAILED -> Color(0xFFFF5252)
+                        else -> if (connectionState.isConnectingStage || connectionState == ConnectionState.RECONNECTING) Color(0xFFFFB300) else MaterialTheme.colorScheme.onSurfaceVariant
                     }
                 )
             }
@@ -232,7 +229,7 @@ fun HomeScreen(
             )
 
             // Last Error Notice if any
-            if (stats.lastError != null && connectionState == ConnectionState.ERROR) {
+            if (stats.lastError != null && connectionState == ConnectionState.FAILED) {
                 Spacer(modifier = Modifier.height(16.dp))
                 Row(
                     verticalAlignment = Alignment.CenterVertically,

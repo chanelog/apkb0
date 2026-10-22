@@ -16,7 +16,7 @@ object ConfigExporter {
             TunnelProtocol.VLESS -> exportVlessUri(profile)
             TunnelProtocol.VMESS -> exportVmessUri(profile)
             TunnelProtocol.TROJAN -> exportTrojanUri(profile)
-            TunnelProtocol.SSH_WS, TunnelProtocol.SSH_TCP, TunnelProtocol.SSH_HTTP_UPGRADE -> exportSshUri(profile)
+            TunnelProtocol.SSH_WS, TunnelProtocol.SSH_WS_NTLS, TunnelProtocol.SSH_WS_TLS, TunnelProtocol.SSH_TCP, TunnelProtocol.SSH_HTTP_UPGRADE, TunnelProtocol.SSH_OVER_TLS -> exportSshUri(profile)
         }
     }
 

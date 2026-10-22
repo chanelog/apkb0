@@ -26,7 +26,7 @@ import javax.net.ssl.SSLSocket
 
 object VpnController {
 
-    private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
+    private val _connectionState = MutableStateFlow(ConnectionState.IDLE)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
     private val _connectionStats = MutableStateFlow(ConnectionStats())
@@ -43,7 +43,7 @@ object VpnController {
     private var lastDownloadedBytes = 0L
 
     fun updateState(state: ConnectionState, profile: Profile? = null, error: String? = null) {
-        OGLogger.i("VpnController", "VPN State changed: ${state.name} (Profile: ${profile?.name})")
+        OGLogger.i("VpnController", "VPN State changed: ${state.name} [${state.label}] (Profile: ${profile?.name})")
         _connectionState.value = state
         if (profile != null) {
             _activeProfile.value = profile
@@ -57,6 +57,8 @@ object VpnController {
 
         if (error != null) {
             _connectionStats.value = _connectionStats.value.copy(lastError = error)
+        } else if (state == ConnectionState.CONNECTED || state == ConnectionState.IDLE) {
+            _connectionStats.value = _connectionStats.value.copy(lastError = null)
         }
     }
 
@@ -131,7 +133,7 @@ object VpnController {
             return
         }
 
-        updateState(ConnectionState.CONNECTING, profile)
+        updateState(ConnectionState.VALIDATING, profile)
         val intent = Intent(context, OGTunnelVpnService::class.java).apply {
             action = OGTunnelVpnService.ACTION_CONNECT
             putExtra(OGTunnelVpnService.EXTRA_PROFILE_ID, profile.id)

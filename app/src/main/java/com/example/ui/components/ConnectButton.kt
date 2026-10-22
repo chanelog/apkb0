@@ -37,6 +37,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.domain.model.ConnectionState
+import com.example.ui.theme.CyanGlow
 import com.example.ui.theme.ElectricTeal
 import com.example.ui.theme.StatusBlue
 import com.example.ui.theme.StatusGreen
@@ -52,7 +53,7 @@ fun ConnectButton(
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
     val pulseScale by infiniteTransition.animateFloat(
         initialValue = 1f,
-        targetValue = if (connectionState == ConnectionState.CONNECTED || connectionState == ConnectionState.CONNECTING) 1.12f else 1f,
+        targetValue = if (connectionState == ConnectionState.CONNECTED || connectionState.isConnectingStage) 1.12f else 1f,
         animationSpec = infiniteRepeatable(
             animation = tween(1200, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
@@ -61,12 +62,17 @@ fun ConnectButton(
     )
 
     val (glowColor, buttonText) = when (connectionState) {
-        ConnectionState.DISCONNECTED -> Pair(Color(0xFF2E3E70), "TAP TO CONNECT")
-        ConnectionState.CONNECTING -> Pair(StatusYellow, "CONNECTING...")
+        ConnectionState.IDLE -> Pair(Color(0xFF2E3E70), "TAP TO CONNECT")
+        ConnectionState.VALIDATING -> Pair(StatusYellow, "VALIDATING...")
+        ConnectionState.CONNECTING_TRANSPORT -> Pair(StatusYellow, "CONNECTING TRANSPORT...")
+        ConnectionState.AUTHENTICATING -> Pair(StatusYellow, "AUTHENTICATING...")
+        ConnectionState.STARTING_ENGINE -> Pair(StatusYellow, "STARTING ENGINE...")
+        ConnectionState.ESTABLISHING_VPN -> Pair(StatusYellow, "ESTABLISHING VPN...")
+        ConnectionState.TESTING_CONNECTIVITY -> Pair(CyanGlow, "TESTING INTERNET...")
         ConnectionState.CONNECTED -> Pair(StatusGreen, "CONNECTED")
         ConnectionState.RECONNECTING -> Pair(StatusBlue, "RECONNECTING...")
         ConnectionState.DISCONNECTING -> Pair(Color(0xFF888888), "DISCONNECTING...")
-        ConnectionState.ERROR -> Pair(StatusRed, "ERROR - RETRY")
+        ConnectionState.FAILED -> Pair(StatusRed, "FAILED - RETRY")
     }
 
     Column(
@@ -119,7 +125,7 @@ fun ConnectButton(
                     )
                     .testTag("connect_disconnect_button")
             ) {
-                if (connectionState == ConnectionState.CONNECTING || connectionState == ConnectionState.DISCONNECTING) {
+                if (connectionState.isConnectingStage || connectionState == ConnectionState.DISCONNECTING) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(72.dp),
                         color = glowColor,

@@ -91,16 +91,21 @@ class MainViewModel : ViewModel() {
     // Logs UI state
     val logs: StateFlow<List<LogEntry>> = OGLogger.logsFlow
     val logFilterLevel = MutableStateFlow<LogLevel?>(null)
+    val logFilterComponent = MutableStateFlow<String?>("ALL")
     val logSearchQuery = MutableStateFlow("")
 
     val filteredLogs: StateFlow<List<LogEntry>> = combine(
         logs,
         logFilterLevel,
+        logFilterComponent,
         logSearchQuery
-    ) { allLogs, level, query ->
+    ) { allLogs, level, component, query ->
         var list = allLogs
         if (level != null) {
             list = list.filter { it.level == level }
+        }
+        if (component != null && component != "ALL") {
+            list = list.filter { it.tag.contains(component, ignoreCase = true) }
         }
         if (query.isNotBlank()) {
             val q = query.lowercase()
@@ -121,7 +126,7 @@ class MainViewModel : ViewModel() {
         val state = connectionState.value
         val profile = activeProfile.value
 
-        if (state == ConnectionState.CONNECTED || state == ConnectionState.CONNECTING || state == ConnectionState.RECONNECTING) {
+        if (state.isActiveOrPending) {
             VpnController.stopVpn(context)
         } else {
             if (profile != null) {

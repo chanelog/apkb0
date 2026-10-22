@@ -1,6 +1,7 @@
 package com.example.engine.ssh
 
 import android.os.Build
+import com.example.domain.model.ConnectionState
 import com.example.domain.model.Profile
 import com.example.domain.model.TunnelProtocol
 import com.example.utils.OGLogger
@@ -40,6 +41,7 @@ class SshWsEngine(
     val requestedLocalSocksPort: Int = 10808,
     private val timeoutSeconds: Int = 15,
     private val onTrafficUpdate: (uploadBytes: Long, downloadBytes: Long) -> Unit,
+    private val onStateUpdate: ((ConnectionState, String?) -> Unit)? = null,
     private val socketProtector: ((Socket) -> Unit)? = null
 ) {
 
@@ -124,6 +126,8 @@ class SshWsEngine(
             session.timeout = timeoutSeconds * 1000
             session.serverAliveInterval = profile.keepaliveIntervalSeconds.coerceAtLeast(5)
 
+            onStateUpdate?.invoke(ConnectionState.AUTHENTICATING, "Authenticating SSH credentials (${profile.sshUsername})")
+            OGLogger.i("SSH", "Initiating SSH handshake with ${profile.sshHost}:${profile.sshPort}")
             session.connect(timeoutSeconds * 1000)
 
             if (!session.isConnected) {
@@ -131,14 +135,15 @@ class SshWsEngine(
             }
 
             OGLogger.i("SSH", session.serverVersion)
-            OGLogger.i("SSH", "Auth complete")
-            OGLogger.i("SSH", "Connected")
+            OGLogger.success("SSH", "Auth complete")
+            OGLogger.success("SSH", "Connected to SSH server")
 
             if (!hasBannerBeenLogged.get()) {
                 fetchServerBanner(session)
             }
 
             // Start local SOCKS5 proxy server for TUN routing
+            onStateUpdate?.invoke(ConnectionState.STARTING_ENGINE, "Binding local SOCKS5 proxy")
             startLocalSocksServer(session)
 
             // Start background HTTP ping loop to verify actual internet connectivity
@@ -155,29 +160,40 @@ class SshWsEngine(
         val targetHost: String
         val targetPort: Int
 
-        when (profile.protocol) {
-            TunnelProtocol.SSH_WS, TunnelProtocol.SSH_HTTP_UPGRADE -> {
-                targetHost = profile.wsHost.ifEmpty { profile.sshHost }
-                targetPort = profile.wsPort
-            }
-            else -> {
-                targetHost = profile.sshHost
-                targetPort = profile.sshPort
-            }
+        val isWs = when (profile.protocol) {
+            TunnelProtocol.SSH_WS, TunnelProtocol.SSH_WS_NTLS, TunnelProtocol.SSH_WS_TLS, TunnelProtocol.SSH_HTTP_UPGRADE -> true
+            else -> false
         }
 
-        OGLogger.i("Transport", "Connecting to $targetHost port $targetPort")
+        val isTls = when (profile.protocol) {
+            TunnelProtocol.SSH_WS_TLS, TunnelProtocol.SSH_OVER_TLS -> true
+            TunnelProtocol.SSH_WS_NTLS, TunnelProtocol.SSH_TCP -> false
+            else -> profile.tlsEnabled
+        }
+
+        if (isWs) {
+            targetHost = profile.wsHost.ifEmpty { profile.sshHost }
+            targetPort = if (profile.wsPort > 0) profile.wsPort else if (isTls) 443 else 80
+        } else {
+            targetHost = profile.sshHost
+            targetPort = profile.sshPort
+        }
+
+        onStateUpdate?.invoke(ConnectionState.CONNECTING_TRANSPORT, "Connecting to $targetHost:$targetPort")
+        OGLogger.i("Transport", "Connecting to $targetHost port $targetPort (${profile.protocol.displayName})")
 
         val baseSocket = Socket()
         socketProtector?.invoke(baseSocket)
         baseSocket.connect(InetSocketAddress(targetHost, targetPort), timeoutSeconds * 1000)
         baseSocket.tcpNoDelay = true
 
+        OGLogger.success("Transport", "TCP transport connected to $targetHost:$targetPort")
         rawTransportSocket = baseSocket
-        var transportSocket = baseSocket
+        var transportSocket: Socket = baseSocket
 
-        if (profile.tlsEnabled) {
+        if (isTls) {
             val sniHost = profile.tlsSni.ifEmpty { targetHost }
+            onStateUpdate?.invoke(ConnectionState.CONNECTING_TRANSPORT, "TLS handshake with $sniHost")
             OGLogger.i("TLS", "Handshaking using $sniHost")
 
             val sslContext = if (profile.allowInsecureCert) {
@@ -195,12 +211,13 @@ class SshWsEngine(
             ) as SSLSocket
 
             sslSocket.startHandshake()
-            OGLogger.i("TLS", "Handshaked")
+            OGLogger.success("TLS", "TLS Handshake completed successfully ($sniHost)")
             transportSocket = sslSocket
             rawTransportSocket = sslSocket
         }
 
-        if (profile.protocol == TunnelProtocol.SSH_WS || profile.protocol == TunnelProtocol.SSH_HTTP_UPGRADE) {
+        if (isWs) {
+            onStateUpdate?.invoke(ConnectionState.CONNECTING_TRANSPORT, "Sending WebSocket / HTTP Upgrade payload")
             performWebSocketHandshake(transportSocket, targetHost, targetPort)
         }
 
@@ -243,6 +260,7 @@ class SshWsEngine(
         if (!statusLine.contains("101") && !statusLine.contains("200")) {
             throw IllegalStateException("WebSocket Upgrade rejected by server: $statusLine")
         }
+        OGLogger.success("HTTP", "WebSocket handshake succeeded: $statusLine")
     }
 
     private fun readHttpHeader(inputStream: InputStream): String {

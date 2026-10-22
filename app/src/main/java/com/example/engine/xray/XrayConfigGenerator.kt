@@ -187,7 +187,8 @@ object XrayConfigGenerator {
         when (sec) {
             "tls" -> {
                 val tlsSettings = JSONObject().apply {
-                    if (profile.sni.isNotBlank()) put("serverName", profile.sni)
+                    val serverName = profile.sni.ifEmpty { profile.serverAddress }
+                    if (serverName.isNotBlank()) put("serverName", serverName)
                     put("allowInsecure", false)
                     if (profile.alpn.isNotBlank()) {
                         val alpnArr = JSONArray()
@@ -202,7 +203,8 @@ object XrayConfigGenerator {
             }
             "reality" -> {
                 val realitySettings = JSONObject().apply {
-                    if (profile.sni.isNotBlank()) put("serverName", profile.sni)
+                    val serverName = profile.sni.ifEmpty { profile.serverAddress }
+                    if (serverName.isNotBlank()) put("serverName", serverName)
                     if (profile.fingerprint.isNotBlank()) put("fingerprint", profile.fingerprint)
                     put("show", false)
                     put("publicKey", profile.realityPublicKey)

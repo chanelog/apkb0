@@ -1,9 +1,12 @@
 package com.example.domain.model
 
 enum class TunnelProtocol(val displayName: String, val category: ProtocolCategory) {
-    SSH_WS("SSH WebSocket", ProtocolCategory.SSHWS),
     SSH_TCP("SSH Direct TCP", ProtocolCategory.SSHWS),
+    SSH_WS_NTLS("SSH WS NTLS", ProtocolCategory.SSHWS),
+    SSH_WS_TLS("SSH WS TLS", ProtocolCategory.SSHWS),
     SSH_HTTP_UPGRADE("SSH HTTP Upgrade", ProtocolCategory.SSHWS),
+    SSH_OVER_TLS("SSH Direct TLS", ProtocolCategory.SSHWS),
+    SSH_WS("SSH WebSocket", ProtocolCategory.SSHWS),
     VLESS("VLESS", ProtocolCategory.XRAY),
     VMESS("VMess", ProtocolCategory.XRAY),
     TROJAN("Trojan", ProtocolCategory.XRAY);
