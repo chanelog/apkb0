@@ -1,0 +1,6 @@
+{
+  "name": "OGTunnel",
+  "description": "SSHWS and Xray VPN client for Android with real TUN routing, profile management, and network diagnostics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
