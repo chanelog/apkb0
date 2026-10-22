@@ -83,10 +83,11 @@ gradle :app:testDebugUnitTest
 ```
 
 ### Xray Core Deployment
-For full native Xray daemon execution on device architectures:
-1. Obtain the official `xray` binary for your target architecture (`arm64-v8a`, `x86_64`, `armeabi-v7a`) from [XTLS/Xray-core](https://github.com/XTLS/Xray-core/releases) (licensed under Mozilla Public License 2.0).
-2. Place the compiled shared object `libxray.so` into `app/src/main/jniLibs/<abi>/libxray.so`.
-3. The app's `XrayCoreManager` automatically detects and launches the executable binary from the native library directory.
+OGTunnel is bundled with the official **Xray-core v26.9.30** release binaries:
+- `arm64-v8a`: `app/src/main/jniLibs/arm64-v8a/libxray.so` (from `Xray-android-arm64-v8a.zip`)
+- `x86_64`: `app/src/main/jniLibs/x86_64/libxray.so` (from `Xray-android-amd64.zip`)
+- Asset routing data: `geoip.dat` and `geosite.dat` are bundled in `app/src/main/assets/` and dynamically loaded.
+`XrayCoreManager` detects the device architecture and executes the native daemon directly with `useLegacyPackaging = true`.
 
 ---
 

@@ -74,12 +74,17 @@ class XrayCoreManager(
 
         return try {
             OGLogger.i("XrayCoreManager", "Launching Xray process: ${binaryFile.absolutePath} run -c ${configFile.absolutePath}")
+            val configDir = File(context.filesDir, "xray").apply { mkdirs() }
+            ensureAssetsExtracted(configDir)
+
             val pb = ProcessBuilder(
                 binaryFile.absolutePath,
                 "run",
                 "-c",
                 configFile.absolutePath
             )
+            pb.environment()["XRAY_LOCATION_ASSET"] = configDir.absolutePath
+            pb.directory(configDir)
             pb.redirectErrorStream(true)
             val proc = pb.start()
             process = proc
@@ -95,7 +100,7 @@ class XrayCoreManager(
                     }
                     val exit = proc.waitFor()
                     if (isRunning.get()) {
-                        OGLogger.e("XrayCoreManager", "Xray process exited unexpectedly with code $exit")
+                        OGLogger.e("XrayCoreManager", "Xray process exited with code $exit")
                         isRunning.set(false)
                         onCrashOrExit(exit, "Xray process exited with code $exit")
                     }
@@ -114,6 +119,24 @@ class XrayCoreManager(
         }
     }
 
+    private fun ensureAssetsExtracted(targetDir: File) {
+        listOf("geoip.dat", "geosite.dat").forEach { assetName ->
+            val dest = File(targetDir, assetName)
+            if (!dest.exists() || dest.length() == 0L) {
+                try {
+                    context.assets.open(assetName).use { input ->
+                        dest.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    OGLogger.i("XrayCoreManager", "Extracted $assetName to ${dest.absolutePath}")
+                } catch (e: Exception) {
+                    OGLogger.w("XrayCoreManager", "Notice: Asset $assetName not extracted: ${e.message}")
+                }
+            }
+        }
+    }
+
     private fun findCoreBinary(): File? {
         val nativeDir = File(context.applicationInfo.nativeLibraryDir)
         val possibleNames = listOf("libxray.so", "xray")
@@ -122,8 +145,23 @@ class XrayCoreManager(
             if (f.exists() && f.canExecute()) return f
         }
 
-        val internalBin = File(context.filesDir, "xray")
+        val internalBin = File(context.filesDir, "xray/libxray.so")
         if (internalBin.exists() && internalBin.canExecute()) return internalBin
+
+        // Fallback: If in nativeDir but execute bit needs copy
+        val nativeLib = File(nativeDir, "libxray.so")
+        if (nativeLib.exists()) {
+            val localBin = File(context.filesDir, "xray/xray_bin")
+            try {
+                if (!localBin.exists() || localBin.length() != nativeLib.length()) {
+                    nativeLib.inputStream().use { input ->
+                        localBin.outputStream().use { output -> input.copyTo(output) }
+                    }
+                    localBin.setExecutable(true, false)
+                }
+                if (localBin.canExecute()) return localBin
+            } catch (_: Exception) {}
+        }
 
         return null
     }
@@ -151,8 +189,8 @@ class XrayCoreManager(
     }
 
     companion object {
-        const val CORE_VERSION = "v1.8.24"
+        const val CORE_VERSION = "v26.9.30"
         const val LICENSE = "Mozilla Public License 2.0 (MPL 2.0)"
-        val ARCHITECTURES = listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+        val ARCHITECTURES = listOf("arm64-v8a", "x86_64", "armeabi-v7a", "x86")
     }
 }
