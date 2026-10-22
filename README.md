@@ -91,6 +91,23 @@ OGTunnel is bundled with the official **Xray-core v26.9.30** release binaries:
 
 ---
 
+## 🤖 GitHub Actions CI/CD Deployment
+
+Workflow file: `.github/workflows/build-and-release.yml`
+
+### Features:
+- **Automatic Build**: Triggers on push / PR to `main` or `master`.
+- **Manual Trigger**: Can be run manually via `Actions` -> `Run workflow` with choice of `debug`, `release`, or `all`.
+- **Automated GitHub Releases**: Creating a git tag like `v1.0.0` will automatically build and publish APKs to GitHub Releases.
+- **Signing Fallback**: If no release keystore secret is configured, it falls back to the debug keystore so CI builds never break.
+
+### Optional GitHub Repository Secrets (for signed production APKs):
+- `KEYSTORE_BASE64`: Base64-encoded `.jks` keystore file (`base64 -w 0 my-release-key.jks`)
+- `STORE_PASSWORD`: Keystore store password
+- `KEY_PASSWORD`: Key alias password
+
+---
+
 ## 📄 License
 - OGTunnel client UI and networking code: MIT License.
 - Xray-core specifications: Mozilla Public License 2.0 (MPL 2.0).
